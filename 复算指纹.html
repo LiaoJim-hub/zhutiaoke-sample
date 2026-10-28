@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>复算指纹 · 逐条可核（离线）</title>
+<style>
+  :root { color-scheme: light; }
+  body { font: 15px/1.7 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+         max-width: 760px; margin: 40px auto; padding: 0 20px; color: #1c1c1e; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  .sub { color: #6b6b70; margin-bottom: 28px; }
+  .drop { border: 2px dashed #c7c7cc; border-radius: 12px; padding: 36px 20px;
+          text-align: center; color: #6b6b70; cursor: pointer; transition: .15s; }
+  .drop:hover, .drop.hot { border-color: #0a84ff; color: #0a84ff; background: #f5f9ff; }
+  #out { margin-top: 26px; display: none; }
+  .card { border: 1px solid #e5e5ea; border-radius: 12px; padding: 18px 20px; }
+  .verdict { font-size: 30px; font-weight: 700; letter-spacing: .5px; }
+  .pass { color: #1a7f37; } .fail { color: #d1242f; }
+  table { border-collapse: collapse; margin-top: 14px; width: 100%; }
+  td { padding: 6px 0; border-bottom: 1px solid #f0f0f2; vertical-align: top; }
+  td.k { color: #6b6b70; width: 120px; }
+  code { font: 13px/1.5 ui-monospace, Consolas, monospace; background: #f6f6f8;
+         padding: 2px 6px; border-radius: 4px; word-break: break-all; }
+  .note { margin-top: 22px; font-size: 13.5px; color: #3c3c43; background: #fafafa;
+          border-left: 3px solid #d1d1d6; padding: 12px 16px; border-radius: 0 8px 8px 0; }
+  .note b { color: #1c1c1e; }
+</style>
+</head>
+<body>
+
+<h1>复算指纹</h1>
+<div class="sub">选一份报告 → 本机计算 → <b>不联网、不上传、无依赖</b>。页面源码就在你眼前。</div>
+
+<div class="drop" id="drop">
+  点这里选文件，或把报告拖进来<br>
+  <span style="font-size:13px">（<code>.md</code> / <code>.txt</code>，以 UTF-8 读取）</span>
+  <input type="file" id="file" accept=".md,.txt,text/*" hidden>
+</div>
+
+<div id="out">
+  <div class="card">
+    <div class="verdict" id="verdict">—</div>
+    <table>
+      <tr><td class="k">文件</td><td id="fname">—</td></tr>
+      <tr><td class="k">报告声称</td><td><code id="claimed">—</code></td></tr>
+      <tr><td class="k">本机实算</td><td><code id="actual">—</code></td></tr>
+    </table>
+    <div class="note" id="meaning"></div>
+  </div>
+</div>
+
+<div class="note" style="margin-top:26px">
+  <b>算法（与报告内声明逐字一致）</b><br>
+  把「报告指纹」那一行里 <code>sha256:</code> 之后的连续十六进制字符清空 →
+  对剩余全文按 <b>UTF-8</b> 编码算 SHA-256 → 取前 <b>16</b> 位十六进制。
+</div>
+
+<div class="note">
+  <b>PASS 意味着什么</b>：这份文件与它自带的声称值<b>一致</b>。<br>
+  <b>PASS 不意味着什么</b>：不代表内容正确、判据合理、程序到位、可以签署。<br>
+  要判断内容，读报告第一页那四条边界。<b>「未问」≠「通过」</b>。
+</div>
+
+<script>
+// ==== SHA256 BEGIN（纯 JS · 不依赖 WebCrypto —— 因为 file:// 下 crypto.subtle 不可用）====
+function sha256bytes(bytes) {
+  var K = [
+    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+  ];
+  var H = [0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];
+  var l = bytes.length, withPad = ((l + 9 + 63) >> 6) << 6;
+  var m = new Uint8Array(withPad);
+  m.set(bytes);
+  m[l] = 0x80;
+  var bits = l * 8;
+  m[withPad - 1] = (bits >>> 0) & 0xff;
+  m[withPad - 2] = (bits >>> 8) & 0xff;
+  m[withPad - 3] = (bits >>> 16) & 0xff;
+  m[withPad - 4] = (bits >>> 24) & 0xff;
+  var w = new Uint32Array(64);
+  function rotr(x, n) { return (x >>> n) | (x << (32 - n)); }
+  for (var i = 0; i < withPad; i += 64) {
+    for (var t = 0; t < 16; t++) {
+      w[t] = (m[i + t*4] << 24) | (m[i + t*4 + 1] << 16) | (m[i + t*4 + 2] << 8) | m[i + t*4 + 3];
+    }
+    for (var t2 = 16; t2 < 64; t2++) {
+      var s0 = rotr(w[t2-15], 7) ^ rotr(w[t2-15], 18) ^ (w[t2-15] >>> 3);
+      var s1 = rotr(w[t2-2], 17) ^ rotr(w[t2-2], 19) ^ (w[t2-2] >>> 10);
+      w[t2] = (w[t2-16] + s0 + w[t2-7] + s1) >>> 0;
+    }
+    var a=H[0],b=H[1],c=H[2],d=H[3],e=H[4],f=H[5],g=H[6],h=H[7];
+    for (var t3 = 0; t3 < 64; t3++) {
+      var S1 = rotr(e,6) ^ rotr(e,11) ^ rotr(e,25);
+      var ch = (e & f) ^ (~e & g);
+      var t1 = (h + S1 + ch + K[t3] + w[t3]) >>> 0;
+      var S0 = rotr(a,2) ^ rotr(a,13) ^ rotr(a,22);
+      var maj = (a & b) ^ (a & c) ^ (b & c);
+      var t4 = (S0 + maj) >>> 0;
+      h=g; g=f; f=e; e=(d+t1)>>>0; d=c; c=b; b=a; a=(t1+t4)>>>0;
+    }
+    H[0]=(H[0]+a)>>>0; H[1]=(H[1]+b)>>>0; H[2]=(H[2]+c)>>>0; H[3]=(H[3]+d)>>>0;
+    H[4]=(H[4]+e)>>>0; H[5]=(H[5]+f)>>>0; H[6]=(H[6]+g)>>>0; H[7]=(H[7]+h)>>>0;
+  }
+  var hex = "";
+  for (var k = 0; k < 8; k++) hex += ("00000000" + H[k].toString(16)).slice(-8);
+  return hex;
+}
+function sha256hex(s) { return sha256bytes(new TextEncoder().encode(s)); }
+// ==== SHA256 END ====
+
+// 单一定义：只清掉「报告指纹」那一行里 sha256: 之后的连续十六进制
+function stripFingerprint(text) {
+  return text.split("\n").map(function (line) {
+    if (line.indexOf("报告指纹") === -1 || line.indexOf("sha256:") === -1) return line;
+    var i = line.lastIndexOf("sha256:") + 7;
+    var j = i;
+    while (j < line.length && j - i < 16 && "0123456789abcdef".indexOf(line[j]) !== -1) j++;
+    return line.slice(0, i) + line.slice(j);
+  }).join("\n");
+}
+function claimedFingerprint(text) {
+  var lines = text.split("\n");
+  for (var n = 0; n < lines.length; n++) {
+    var line = lines[n];
+    if (line.indexOf("报告指纹") === -1 || line.indexOf("sha256:") === -1) continue;
+    var i = line.lastIndexOf("sha256:") + 7, j = i;
+    while (j < line.length && "0123456789abcdef".indexOf(line[j]) !== -1) j++;
+    return line.slice(i, j);
+  }
+  return "";
+}
+
+var drop = document.getElementById("drop"), input = document.getElementById("file");
+drop.addEventListener("click", function () { input.click(); });
+input.addEventListener("change", function () { if (input.files[0]) run(input.files[0]); });
+["dragover","dragenter"].forEach(function (e) {
+  drop.addEventListener(e, function (ev) { ev.preventDefault(); drop.classList.add("hot"); });
+});
+["dragleave","drop"].forEach(function (e) {
+  drop.addEventListener(e, function (ev) { ev.preventDefault(); drop.classList.remove("hot"); });
+});
+drop.addEventListener("drop", function (ev) {
+  var f = ev.dataTransfer.files[0]; if (f) run(f);
+});
+
+function run(file) {
+  var _n = (file.name || "").toLowerCase();
+  if (!/\.(md|txt)$/.test(_n)) {
+    alert("仅支持 .md 或 .txt 文件（你拖的是：" + (file.name || "未知") + "）。");
+    return;
+  }
+  var reader = new FileReader();
+  reader.onload = function () {
+    var text = new TextDecoder("utf-8").decode(new Uint8Array(reader.result));
+    var claimed = claimedFingerprint(text);
+    var actual = sha256hex(stripFingerprint(text)).slice(0, 16);
+    var pass = claimed !== "" && claimed === actual;
+
+    document.getElementById("fname").textContent = file.name + "（" + file.size + " 字节）";
+    document.getElementById("claimed").textContent = claimed ? "sha256:" + claimed : "（未找到「报告指纹」行）";
+    document.getElementById("actual").textContent = "sha256:" + actual;
+
+    var v = document.getElementById("verdict");
+    v.textContent = claimed === "" ? "无法判定" : (pass ? "PASS" : "FAIL");
+    v.className = "verdict " + (claimed === "" ? "" : (pass ? "pass" : "fail"));
+
+    document.getElementById("meaning").innerHTML = claimed === ""
+      ? "这份文件里没有「报告指纹」行 —— 它不是本工具生成的报告，或那一行被删掉了。"
+      : (pass
+        ? "<b>PASS</b>：这份文件与它自带的声称值<b>一致</b>。<br><b>但这不证明「没被改过」</b> —— 只证明「字与签名对得上」；要防"改完再重签"，需要外部锚（见 README）。"
+        : "<b>FAIL</b>：文件内容与报告声称的指纹不一致（哪怕只多一个空格）。<br>此时<b>不得把它当作凭证使用</b>。");
+
+    document.getElementById("out").style.display = "block";
+  };
+  reader.readAsArrayBuffer(file);   // ★ 按二进制读，避免换行/编码转换改变字节
+}
+</script>
+</body>
+</html>
