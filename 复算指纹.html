@@ -15,7 +15,12 @@
   #out { margin-top: 26px; display: none; }
   .card { border: 1px solid #e5e5ea; border-radius: 12px; padding: 18px 20px; }
   .verdict { font-size: 30px; font-weight: 700; letter-spacing: .5px; }
-  .pass { color: #1a7f37; } .fail { color: #d1242f; }
+  .pass { color: #1a7f37; } .fail { color: #d1242f; } .unk { color: #9a6700; }
+  #stbtn { margin-left: 8px; font: inherit; padding: 6px 14px; border: 1px solid #c7c7cc;
+           background: #fff; border-radius: 8px; cursor: pointer; }
+  #stbtn:hover { border-color: #0a84ff; color: #0a84ff; }
+  #stout { display: none; white-space: pre-wrap; font: 13px/1.8 ui-monospace, Consolas, monospace;
+           background: #f6f6f8; padding: 12px 14px; border-radius: 8px; margin-top: 12px; }
   table { border-collapse: collapse; margin-top: 14px; width: 100%; }
   td { padding: 6px 0; border-bottom: 1px solid #f0f0f2; vertical-align: top; }
   td.k { color: #6b6b70; width: 120px; }
@@ -29,7 +34,7 @@
 <body>
 
 <h1>复算指纹</h1>
-<div class="sub">选一份报告 → 本机计算 → <b>不联网、不上传、无依赖</b>。页面源码就在你眼前。</div>
+<div class="sub">选一份报告 → 本机计算 → <b>不联网、不上传、无依赖</b>。页面源码就在你眼前。<br><span style="font-size:13px">页面版本 v0.2（2026-11-01）· 底部自带 8 例自检</span></div>
 
 <div class="drop" id="drop">
   点这里选文件，或把报告拖进来<br>
@@ -51,8 +56,13 @@
 
 <div class="note" style="margin-top:26px">
   <b>算法（与报告内声明逐字一致）</b><br>
-  把「报告指纹」那一行里 <code>sha256:</code> 之后的连续十六进制字符清空 →
+  把「报告指纹」那一行里 <code>sha256:</code> 之后的【前 16 位】十六进制字符清空 →
   对剩余全文按 <b>UTF-8</b> 编码算 SHA-256 → 取前 <b>16</b> 位十六进制。
+</div>
+
+<div class="note">
+  <b>这一页自己可信吗？</b> 用页面自己的判定逻辑跑 8 个已知答案的例子：<button id="stbtn">跑自检</button>
+  <pre id="stout"></pre>
 </div>
 
 <div class="note">
@@ -115,7 +125,7 @@ function sha256bytes(bytes) {
 function sha256hex(s) { return sha256bytes(new TextEncoder().encode(s)); }
 // ==== SHA256 END ====
 
-// 单一定义：只清掉「报告指纹」那一行里 sha256: 之后的连续十六进制
+// 单一定义：只清掉「报告指纹」那一行里 sha256: 之后的【前 16 位】
 function stripFingerprint(text) {
   return text.split("\n").map(function (line) {
     if (line.indexOf("报告指纹") === -1 || line.indexOf("sha256:") === -1) return line;
@@ -136,6 +146,103 @@ function claimedFingerprint(text) {
   }
   return "";
 }
+// 有「报告指纹」且提到 sha256: 的行（可能声称值是空的）
+function markerLines(text) {
+  return text.split("\n").filter(function (l) {
+    return l.indexOf("报告指纹") !== -1 && l.indexOf("sha256:") !== -1;
+  }).length;
+}
+// ★ 真正带着十六进制声称值的行 —— 正文里「把本行报告指纹字段的值…」那种句子不算
+function claimLineCount(text) {
+  return text.split("\n").filter(function (l) {
+    return l.indexOf("报告指纹") !== -1 && /sha256:[0-9a-f]/.test(l);
+  }).length;
+}
+
+// ★ 三态：PASS / FAIL / 判不了。
+// FAIL 只留给「格式合规、但字与签名对不上」。其余一律判不了，并说清为什么判不了。
+function evaluate(bytes, name) {
+  var nm = (name || "").toLowerCase();
+  if (!/\.(md|txt)$/.test(nm)) {
+    return { state: "拒绝", why: "仅支持 .md 或 .txt 文件（你给的是：" + (name || "未知") + "）。" };
+  }
+  var text;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch (e) {
+    return { state: "判不了", why: "字节不是合法 UTF-8（最常见：记事本「另存为」ANSI / GBK）。本工具按 UTF-8 读；读不成字符，就谈不上「哪个字被改过」。请另存为 UTF-8 再来。" };
+  }
+  var n = claimLineCount(text);
+  if (n === 0) {
+    return { state: "判不了", why: markerLines(text) === 0
+      ? "这份文件里没有「报告指纹」行 —— 它不是本工具生成的报告，或那一行被删掉了。"
+      : "「报告指纹」那一行里没有声称值（sha256: 后是空的）。没有声称值就无从比对 —— 判不了。" };
+  }
+  if (n > 1) return { state: "判不了", why: "这份文件里有 " + n + " 行「报告指纹」。两个声称值，不知道该信哪个 —— 判不了。" };
+  var claimed = claimedFingerprint(text);
+  if (!/^[0-9a-f]{16}$/.test(claimed)) {
+    return { state: "判不了", claimed: claimed,
+             why: "声称值不是本工具的 16 位格式（读到 " + claimed.length + " 位十六进制）。这是「格式不合规格」，不是「内容被改过」。" };
+  }
+  var actual = sha256hex(stripFingerprint(text)).slice(0, 16);
+  return { state: claimed === actual ? "PASS" : "FAIL", claimed: claimed, actual: actual };
+}
+
+function render(r, name, size) {
+  document.getElementById("fname").textContent = name + "（" + size + " 字节）";
+  document.getElementById("claimed").textContent = r.claimed ? ("sha256:" + r.claimed) : "—";
+  document.getElementById("actual").textContent = r.actual ? ("sha256:" + r.actual) : "—";
+  var v = document.getElementById("verdict");
+  v.textContent = r.state;
+  v.className = "verdict " + (r.state === "PASS" ? "pass" : (r.state === "FAIL" ? "fail" : "unk"));
+  var m;
+  if (r.state === "PASS") {
+    m = "<b>PASS</b>：这份文件与它自带的声称值<b>一致</b>。<br><b>但这不证明「没被改过」</b> —— 只证明「字与签名对得上」；要防「改完再重签」，需要外部锚（见 README 第六节）。";
+  } else if (r.state === "FAIL") {
+    m = "<b>FAIL</b>：格式合规，但文件内容与声称的指纹对不上（哪怕只多一个空格）。<br>此时<b>不得把它当作凭证使用</b>。";
+  } else if (r.state === "判不了") {
+    m = "<b>判不了</b>：既不是「通过」，也不是「被改过」—— 本工具在这份文件上得不出结论。<br>" + r.why;
+  } else {
+    m = r.why;
+  }
+  document.getElementById("meaning").innerHTML = m;
+  document.getElementById("out").style.display = "block";
+}
+
+// ★ 自检：用页面自己的 evaluate() 跑 8 个已知答案的例子 —— 不另写一套判定逻辑
+function selfTest() {
+  var enc = new TextEncoder();
+  function build(body, crlf) {
+    var nl = crlf ? "\r\n" : "\n";
+    var t = ["# 自检用报告", "", "**报告指纹**：`sha256:0000000000000000`", "", body, ""].join(nl);
+    var a = sha256hex(stripFingerprint(t)).slice(0, 16);
+    return t.replace("0000000000000000", a);   // 等长替换，不改变字节位置
+  }
+  var okText = build("正文一行。\n\n- 要点", false);
+  var hex64 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+  var cases = [
+    ["自洽（LF 换行）", enc.encode(okText), "PASS"],
+    ["自洽（CRLF 换行）", enc.encode(build("正文一行。\n\n- 要点", true)), "PASS"],
+    ["改一个字（正文动了一处）", enc.encode(okText.replace("正文一行。", "正文一行！")), "FAIL"],
+    ["声称值是 64 位", enc.encode(okText.replace(/sha256:[0-9a-f]{16}/, "sha256:" + hex64)), "判不了"],
+    ["声称值只有 8 位", enc.encode(okText.replace(/sha256:[0-9a-f]{16}/, "sha256:e54c748c")), "判不了"],
+    ["没有报告指纹行", enc.encode(okText.replace("**报告指纹**", "**（已删）**")), "判不了"],
+    ["有两行报告指纹", enc.encode(okText + "\n**报告指纹**：`sha256:0000000000000000`\n"), "判不了"],
+    ["字节不是 UTF-8", new Uint8Array([0xC4, 0xE3, 0xBA, 0xC3, 0x0A]), "判不了"]
+  ];
+  var out = [], bad = 0;
+  for (var i = 0; i < cases.length; i++) {
+    var r = evaluate(cases[i][1], "自检.md");
+    var ok = r.state === cases[i][2];
+    if (!ok) bad++;
+    out.push((ok ? "通过  " : "不通过 ") + cases[i][0] + "  ·  应有「" + cases[i][2] + "」 实得「" + r.state + "」");
+  }
+  out.unshift("自检 " + (cases.length - bad) + "/" + cases.length +
+              (bad === 0 ? " —— 全部通过" : " —— 有红，说明这一页本身有问题，别拿它当凭证"));
+  var el = document.getElementById("stout");
+  el.style.display = "block";
+  el.textContent = out.join("\n");
+}
 
 var drop = document.getElementById("drop"), input = document.getElementById("file");
 drop.addEventListener("click", function () { input.click(); });
@@ -150,37 +257,17 @@ drop.addEventListener("drop", function (ev) {
   var f = ev.dataTransfer.files[0]; if (f) run(f);
 });
 
+
 function run(file) {
-  var _n = (file.name || "").toLowerCase();
-  if (!/\.(md|txt)$/.test(_n)) {
-    alert("仅支持 .md 或 .txt 文件（你拖的是：" + (file.name || "未知") + "）。");
-    return;
-  }
   var reader = new FileReader();
   reader.onload = function () {
-    var text = new TextDecoder("utf-8").decode(new Uint8Array(reader.result));
-    var claimed = claimedFingerprint(text);
-    var actual = sha256hex(stripFingerprint(text)).slice(0, 16);
-    var pass = claimed !== "" && claimed === actual;
-
-    document.getElementById("fname").textContent = file.name + "（" + file.size + " 字节）";
-    document.getElementById("claimed").textContent = claimed ? "sha256:" + claimed : "（未找到「报告指纹」行）";
-    document.getElementById("actual").textContent = "sha256:" + actual;
-
-    var v = document.getElementById("verdict");
-    v.textContent = claimed === "" ? "无法判定" : (pass ? "PASS" : "FAIL");
-    v.className = "verdict " + (claimed === "" ? "" : (pass ? "pass" : "fail"));
-
-    document.getElementById("meaning").innerHTML = claimed === ""
-      ? "这份文件里没有「报告指纹」行 —— 它不是本工具生成的报告，或那一行被删掉了。"
-      : (pass
-        ? "<b>PASS</b>：这份文件与它自带的声称值<b>一致</b>。<br><b>但这不证明「没被改过」</b> —— 只证明「字与签名对得上」；要防"改完再重签"，需要外部锚（见 README）。"
-        : "<b>FAIL</b>：文件内容与报告声称的指纹不一致（哪怕只多一个空格）。<br>此时<b>不得把它当作凭证使用</b>。");
-
-    document.getElementById("out").style.display = "block";
+    render(evaluate(new Uint8Array(reader.result), file.name), file.name, file.size);
   };
   reader.readAsArrayBuffer(file);   // ★ 按二进制读，避免换行/编码转换改变字节
 }
+</script>
+<script>
+document.getElementById("stbtn").addEventListener("click", selfTest);
 </script>
 </body>
 </html>
